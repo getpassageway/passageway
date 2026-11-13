@@ -3,10 +3,7 @@ import os
 import re
 import shutil
 import subprocess
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
