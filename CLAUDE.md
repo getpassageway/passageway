@@ -26,4 +26,4 @@ The plan for where passageway is going, and for how trilium-recall folds into it
 
 ## Releases
 
-A `vX.Y.Z` tag is a release and must equal the version in `pyproject.toml`. The Release workflow creates the GitHub release and posts its notes to the notefeed feed; see `docs/development.md`.
+A `vX.Y.Z` tag is a release and must equal the version in `pyproject.toml`. The Release workflow creates the GitHub release; see `docs/development.md`.

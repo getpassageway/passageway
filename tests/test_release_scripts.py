@@ -3,10 +3,7 @@ import os
 import re
 import shutil
 import subprocess
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -190,104 +187,9 @@ def test_a_tag_that_does_not_exist_fails_clearly_before_calling_github(repo):
     assert not (cwd / "gh.log").exists()
 
 
-# ---- post-to-notefeed.sh ------------------------------------------------------------------------
-
-class FakeNotefeed:
-    def __init__(self):
-        self.notes = []      # posted notes: {"headers": {...}, "body": str}
-        self.requests = []   # (method, path, headers)
-        self.fail_post = False
-
-
-@pytest.fixture
-def notefeed():
-    state = FakeNotefeed()
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            url = urlparse(self.path)
-            state.requests.append(("GET", self.path, dict(self.headers)))
-            tag = parse_qs(url.query).get("tag", [None])[0]
-            hits = [n for n in state.notes if tag in n["headers"].get("X-Note-Tags", "").split(",")]
-            body = json.dumps({"notes": hits[:1]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode()
-            state.requests.append(("POST", self.path, dict(self.headers)))
-            if state.fail_post:
-                self.send_response(500)
-                self.end_headers()
-                return
-            state.notes.append({"headers": dict(self.headers), "body": body})
-            self.send_response(201)
-            self.end_headers()
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
-    state.url = f"http://127.0.0.1:{server.server_port}"
-    yield state
-    server.shutdown()
-
-
-def post(notefeed, tmp_path, tag="v1.2.3", **env):
-    notes = tmp_path / "notes.md"
-    notes.write_text("## Release\n\nWhat changed.\n")
-    base = {"NOTEFEED_URL": notefeed.url, "NOTEFEED_FEED": "feedname", "NOTEFEED_FEED_PASSWORD": "pw",
-            "GITHUB_REPOSITORY": "getpassageway/passageway"}
-    return run("post-to-notefeed.sh", tag, str(notes), env={**base, **env})
-
-
-def test_it_posts_the_notes_once_with_title_tags_and_password(notefeed, tmp_path):
-    done = post(notefeed, tmp_path)
-    assert done.returncode == 0, done.stderr
-    assert len(notefeed.notes) == 1
-    note = notefeed.notes[0]
-    assert "What changed." in note["body"]
-    assert note["headers"]["X-Note-Title"] == "passageway 1.2.3"
-    assert note["headers"]["X-Note-Tags"] == "release,passageway,passageway-v1.2.3"
-    assert note["headers"]["X-Feed-Password"] == "pw"
-    assert note["headers"]["Content-Type"] == "text/markdown"
-
-
-def test_a_rerun_does_not_post_twice(notefeed, tmp_path):
-    post(notefeed, tmp_path)
-    again = post(notefeed, tmp_path)
-    assert again.returncode == 0 and "already on notefeed" in again.stdout
-    assert len(notefeed.notes) == 1
-
-
-def test_another_tag_is_a_new_note(notefeed, tmp_path):
-    post(notefeed, tmp_path, tag="v1.2.3")
-    post(notefeed, tmp_path, tag="v1.2.4")
-    assert len(notefeed.notes) == 2
-
-
-def test_without_the_feed_secret_it_posts_nothing_and_succeeds(notefeed, tmp_path):
-    done = post(notefeed, tmp_path, NOTEFEED_FEED="")
-    assert done.returncode == 0 and notefeed.requests == [] and "not posting" in done.stdout
-
-
-def test_a_missing_repository_name_is_a_clear_error(notefeed, tmp_path):
-    done = post(notefeed, tmp_path, GITHUB_REPOSITORY="")
-    assert done.returncode != 0 and "GITHUB_REPOSITORY is not set" in done.stderr and notefeed.requests == []
-
-
-def test_a_failed_post_fails_the_script(notefeed, tmp_path):
-    notefeed.fail_post = True
-    assert post(notefeed, tmp_path).returncode != 0
-
-
 # ---- the workflow -------------------------------------------------------------------------------
 
-def test_the_release_workflow_calls_only_scripts_that_exist_and_posts_with_the_secrets():
+def test_the_release_workflow_calls_only_scripts_that_exist():
     import re
 
     import yaml
@@ -298,7 +200,6 @@ def test_the_release_workflow_calls_only_scripts_that_exist_and_posts_with_the_s
     for script in set(re.findall(r"scripts/[\w.-]+\.sh", text)):
         path = ROOT / script
         assert path.is_file() and os.access(path, os.X_OK), f"{script} is called by the workflow but is not executable"
-    assert re.search(r"secrets\.NOTEFEED_FEED_PASSWORD\s*}}", text) and re.search(r"secrets\.NOTEFEED_FEED\s*}}", text)
     assert "contents: write" in text
     # a user-supplied tag must never be interpolated into a shell command
     for step in workflow["jobs"]["release"]["steps"]:
